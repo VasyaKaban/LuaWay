@@ -1,0 +1,6 @@
+out/*
+build/*
+src/test/*
+src/main.cpp
+src/CMakeLists.txt.user
+src/CMakeLists.txt
