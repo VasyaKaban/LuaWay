@@ -1,6 +1,7 @@
 #include "FunctionTraits.hpp"
 #include "Ref.hpp"
 #include <limits>
+#include <format>
 
 namespace LuaWay
 {
@@ -15,11 +16,11 @@ namespace LuaWay
 		}
 	}
 
-	template<Stack::HasReceive ...Args, int ...Ind>
+	template<StackUtil::HasReceive ...Args, int ...Ind>
 	auto __receive_arguments(lua_State *state, const std::integer_sequence<int, Ind...> &) -> std::tuple<Args...>
 	{
 		using TupleType = std::tuple<Args...>;
-		return TupleType{Stack::Receive<std::tuple_element_t<Ind, TupleType>>(state, Ind - static_cast<int>(sizeof...(Args)))...};
+		return TupleType{Stack<std::tuple_element_t<Ind, TupleType>>::Receive(state, Ind - static_cast<int>(sizeof...(Args)))...};
 	}
 
 	template<auto func, typename C, typename R, typename ...Args>
@@ -34,7 +35,7 @@ namespace LuaWay
 		constexpr int args_count = sizeof...(Args);
 		int pre_top = lua_gettop(state);
 		__emit_error(state, pre_top >= args_count, std::to_string(args_count) + " arguments were expected but " + std::to_string(pre_top) + " has been received!", pre_top);
-		auto arguments = __receive_arguments(state, std::make_integer_sequence<int, args_count>{});
+		auto arguments = __receive_arguments<Args...>(state, std::make_integer_sequence<int, args_count>{});
 		if constexpr(std::same_as<C, void>)
 		{
 			//plain function
@@ -44,7 +45,7 @@ namespace LuaWay
 				{
 					func(targs...);
 				}, arguments);
-				Stack::Pop(state, args_count);
+				StackUtil::Pop(state, args_count);
 				return 0;
 			}
 			else
@@ -53,8 +54,8 @@ namespace LuaWay
 				{
 					return func(targs...);
 				}, arguments);
-				Stack::Pop(state, args_count);
-				Stack::Push(state, return_value);
+				StackUtil::Pop(state, args_count);
+				Stack<R>::Push(state, return_value);
 				return 1;
 			}
 		}
@@ -62,16 +63,16 @@ namespace LuaWay
 		{
 			//member function
 			__emit_error(state, pre_top >= (args_count + 1), std::to_string(args_count + 1) + " arguments were expected but " + std::to_string(pre_top) + " has been received!", pre_top);
-			VMType vm_type = Stack::GetType(state, pre_top);
+			VMType vm_type = StackUtil::GetType(state, pre_top);
 			__emit_error(state, vm_type == VMType::Userdata, "Bad object type: " + std::string(ToString(vm_type)), args_count + 1);
-			C *this_ptr = static_cast<C *>(Stack::Receive<DataType::Userdata>(state, pre_top).data);
+			C *this_ptr = static_cast<C *>(Stack<DataType::Userdata>::Receive(state, pre_top).data);
 			if constexpr(std::same_as<R, void>)
 			{
 				std::apply([&]<typename ...Targs>(Targs &...targs)
 				{
 					(this_ptr->*func)(targs...);
 				}, arguments);
-				Stack::Pop(state, args_count + 1);
+				StackUtil::Pop(state, args_count + 1);
 				return 0;
 			}
 			else
@@ -80,8 +81,8 @@ namespace LuaWay
 				{
 					return (this_ptr->*func)(targs...);
 				}, arguments);
-				Stack::Pop(state, args_count + 1);
-				Stack::Push(state, return_value);
+				StackUtil::Pop(state, args_count + 1);
+				Stack<R>::Push(state, return_value);
 				return 1;
 			}
 		}
@@ -101,8 +102,11 @@ namespace LuaWay
 			{
 				using ClassType = void;
 				using ReturnType = function_return_type_t<FunctionType>;
-				static_assert((Stack::HasPush<ReturnType>), "ReturnType doesn't have a Push fucntion overload!");
-				static_assert((Stack::HasReceive<Args> && ...), "Not all Args have a Stack::Recieve!");
+				if constexpr(!std::same_as<ReturnType, void>)
+				{
+					static_assert((StackUtil::HasPush<ReturnType>), "ReturnType doesn't have a Push fucntion overload!");
+				}
+				static_assert((StackUtil::HasReceive<Args> && ...), "Not all Args have a Stack::Recieve!");
 				return __cfunction_wrapper
 						<
 							func,
@@ -121,8 +125,11 @@ namespace LuaWay
 			{
 				using ClassType = member_function_pointer_class_t<FunctionType>;
 				using ReturnType = member_function_pointer_return_type_t<FunctionType>;
-				static_assert((Stack::HasPush<ReturnType>), "ReturnType doesn't have a Push fucntion overload!");
-				static_assert((Stack::HasReceive<Args> && ...), "Not all Args have a Stack::Receive!");
+				if constexpr(!std::same_as<ReturnType, void>)
+				{
+					static_assert((StackUtil::HasPush<ReturnType>), "ReturnType doesn't have a Push fucntion overload!");
+				}
+				static_assert((StackUtil::HasReceive<Args> && ...), "Not all Args have a Stack::Receive!");
 				return __cfunction_wrapper
 						<
 							func,
@@ -141,10 +148,10 @@ namespace LuaWay
 	{
 		int pre_top = lua_gettop(state);
 		__emit_error(state, pre_top >= 1, "No object to destroy!");
-		VMType vm_type = Stack::GetType(state, -1);
+		VMType vm_type = StackUtil::GetType(state, -1);
 		__emit_error(state, vm_type == VMType::Userdata, "Userdata was expected but " + std::string(ToString(vm_type)) + " has been received!", 1);
-		DataType::Userdata udata = Stack::Receive<DataType::Userdata>(state, -1);
-		Stack::Pop(state, 1);
+		DataType::Userdata udata = Stack<DataType::Userdata>::Receive(state, -1);
+		StackUtil::Pop(state, 1);
 		if constexpr(std::is_destructible_v<C>)
 		{
 			C *ptr = static_cast<C *>(udata.data);
@@ -161,7 +168,7 @@ namespace LuaWay
 		return __destructor_wrapper<C>;
 	}
 
-	template<typename C, LuaWay::Stack::HasReceive ...Args>
+	template<typename C, StackUtil::HasReceive ...Args>
 		requires std::is_class_v<C>
 	auto __constructor_wrapper(lua_State *state) -> int
 	{
@@ -170,22 +177,22 @@ namespace LuaWay
 		int pre_top = lua_gettop(state);
 		__emit_error(state, pre_top >= (args_count + 1), std::to_string(args_count + 1) + " arguments were expected but " + std::to_string(pre_top) + " has been received!", pre_top);
 		auto arguments = __receive_arguments<Args...>(state, std::make_integer_sequence<int, args_count>{});
-		LuaWay::Ref mt = Stack::Receive<Ref>(state, -(args_count + 1));
-		Stack::Pop(state, args_count + 1);
+		Ref mt = Stack<Ref>::Receive(state, -(args_count + 1));
+		StackUtil::Pop(state, args_count + 1);
 		VMType mt_type = mt.Type();
 		__emit_error(state, mt_type == VMType::Table, "Bad metatable type: " + std::string(ToString(mt_type)));
 		std::apply([&]<typename ...Targs>(Targs &...targs)
 		{
 			void *ptr = lua_newuserdata(state, sizeof(C));
 			new(ptr) C(targs...);
-			Stack::Push(state, mt);
+			Stack<Ref>::Push(state, mt);
 			//udata, metatable
 			lua_setmetatable(state, -2);
 		}, arguments);
 		return 1;
 	}
 
-	template<typename C, LuaWay::Stack::HasReceive ...Args>
+	template<typename C, StackUtil::HasReceive ...Args>
 		requires std::is_class_v<C>
 	constexpr auto CreateConstructorWrapper() -> DataType::CFunction
 	{

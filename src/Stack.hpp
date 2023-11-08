@@ -4,8 +4,33 @@
 
 namespace LuaWay
 {
-	namespace Stack
+	template<typename T>
+	struct Stack
 	{
+		using Type = T;
+		static auto Push(lua_State *state, const T &value) -> void = delete;
+		static auto Receive(lua_State *state, int pos) = delete;
+
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = false;
+	};
+
+	namespace StackUtil
+	{
+		template<typename T>
+		concept HasPush = requires(T &&t)
+		{
+			{Stack<std::remove_cvref_t<T>>::Push(static_cast<lua_State *>(nullptr), std::forward<T>(t))}
+				  -> std::same_as<void>;
+		};
+
+		template<typename T>
+		concept HasReceive = requires(T &&t)
+		{
+			{Stack<std::remove_cvref_t<T>>::Receive(static_cast<lua_State *>(nullptr), -1)}
+				  -> std::same_as<std::remove_cvref_t<T>>;
+		};
+
 		inline auto assert_pos_reacheable(lua_State *state, int pos) -> void
 		{
 			assert(pos != 0);
@@ -64,160 +89,244 @@ namespace LuaWay
 			lua_pop(state, count);
 		}
 
-		template<typename T>
-		auto Push(lua_State *state, const T &value) -> void;
-
-		template<typename T>
-		concept HasPush = requires(T &val)
-		{
-			{Push<T>(static_cast<lua_State *>(nullptr), val)};
-		};
-
 		template<HasPush T>
-		auto PushCheck(lua_State *state, const T &value) -> void
+		auto PushCheck(lua_State *state, T &&value) -> void
 		{
 			assert_state_not_expired(state);
 		#ifndef NDEBUG
 			int target_pos = lua_gettop(state);
 		#endif
-			Push<T>(state, value);
+			Stack<std::remove_cvref_t<T>>::Push(state, std::forward<T>(value));
+		#ifndef NDEBUG
 			assert((lua_gettop(state) - target_pos) == 1);
+		#endif
 		}
-
-		template<typename T>
-		auto Receive(lua_State *state, int pos) -> T;
-
-		template<typename T>
-		concept HasReceive = requires(T &val)
-		{
-			{Receive<T>(static_cast<lua_State *>(nullptr), {})} -> std::same_as<T>;
-		};
 
 		template<HasReceive T>
 		auto ReceiveCheck(lua_State *state, int pos) -> T
 		{
 			assert_pos_reacheable(state, pos);
-			#ifndef NDEBUG
-				int target_pos = lua_gettop(state);
-			#endif
-				T obj = Receive<T>(state, pos);
-				assert((lua_gettop(state) - target_pos) == 0);
+		#ifndef NDEBUG
+			int target_pos = lua_gettop(state);
+		#endif
+			T obj = Stack<T>::Receive(state, pos);
+		#ifndef NDEBUG
+			assert((lua_gettop(state) - target_pos) == 0);
+		#endif
+			return obj;
 		}
 
-		//for DataType:
-		template<>
-		inline auto Push(lua_State *state, const DataType::Nil &value) -> void
+		template<HasReceive T>
+		constexpr auto check_type_is_convertible_from_vm(VMType type) -> bool
+		{
+			bool is_convertible = false;
+			switch(type)
+			{
+				case VMType::Nil:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Nil>;
+					break;
+				case VMType::CFunction:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::CFunction>;
+					break;
+				case VMType::Function:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Function>;
+					break;
+				case VMType::Bool:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Bool>;
+					break;
+				case VMType::Int:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Int>;
+					break;
+				case VMType::LightUserdata:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::LightUserdata>;
+					break;
+				case VMType::Userdata:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Userdata>;
+					break;
+				case VMType::None:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::None>;
+					break;
+				case VMType::Number:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Number>;
+					break;
+					case VMType::String:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::String>;
+					break;
+				case VMType::Table:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Table>;
+					break;
+				case VMType::Thread:
+					is_convertible = Stack<T>::template ConvertibleFromVM<VMType::Thread>;
+					break;
+			}
+
+			return is_convertible;
+		}
+	};
+};
+
+//specialiation for DataType
+namespace LuaWay
+{
+	template<>
+	struct Stack<DataType::Nil>
+	{
+		using Type = DataType::Nil;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
 			lua_pushnil(state);
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::Bool &value) -> void
+		static auto Receive(lua_State *state, int pos) -> Type
+		{
+			return Type();
+		}
+
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Nil);
+	};
+
+	template<>
+	struct Stack<DataType::Bool>
+	{
+		using Type = DataType::Bool;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
 			lua_pushboolean(state, value);
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::LightUserdata &value) -> void
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			lua_pushlightuserdata(state, value.data);
+			return lua_toboolean(state, pos);
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::Number &value) -> void
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Bool);
+	};
+
+	template<>
+	struct Stack<DataType::Number>
+	{
+		using Type = DataType::Number;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
 			lua_pushnumber(state, value);
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::CFunction &value) -> void
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			lua_pushcfunction(state, value);
+			return lua_tonumber(state, pos);
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::Int &value) -> void
-		{
-			lua_pushinteger(state, value);
-		}
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Number);
+	};
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::String &value) -> void
+	template<>
+	struct Stack<DataType::String>
+	{
+		using Type = DataType::String;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
 			lua_pushlstring(state, value.c_str(), value.size());
 		}
 
-		template<>
-		inline auto Push(lua_State *state, const DataType::Thread &value) -> void
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			assert(state == value);
-			lua_pushthread(value);
+			std::size_t len = 0;
+			const char *str = lua_tolstring(state, pos, &len);
+			return Type{str, str + len};
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Nil
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::String);
+	};
+
+	template<>
+	struct Stack<DataType::Int>
+	{
+		using Type = DataType::Int;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
-			assert(Stack::GetType(state, pos) == VMType::Nil);
-			return {};
+			lua_pushinteger(state, value);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Bool
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			assert(Stack::GetType(state, pos) == VMType::Bool);
-			return lua_toboolean(state, pos);
+			return lua_tointeger(state, pos);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::LightUserdata
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Int || type == VMType::Number);
+	};
+
+	template<>
+	struct Stack<DataType::CFunction>
+	{
+		using Type = DataType::CFunction;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
-			assert(Stack::GetType(state, pos) == VMType::LightUserdata);
-			return lua_touserdata(state, pos);
+			lua_pushcfunction(state, value);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Number
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			assert(Stack::GetType(state, pos) == VMType::Number);
-			return lua_tonumber(state, pos);
-		}
-
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::CFunction
-		{
-			assert(Stack::GetType(state, pos) == VMType::CFunction);
 			return lua_tocfunction(state, pos);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Int
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::CFunction);
+	};
+
+	template<>
+	struct Stack<DataType::LightUserdata>
+	{
+		using Type = DataType::LightUserdata;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
-			assert(Stack::GetType(state, pos) == VMType::Number);
-			return lua_tonumber(state, pos);
+			lua_pushlightuserdata(state, value.data);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::String
+		static auto Receive(lua_State *state, int pos) -> Type
 		{
-			assert(Stack::GetType(state, pos) == VMType::String);
-			std::size_t len = 0;
-			auto str_ptr = lua_tolstring(state, pos, &len);
-			return {str_ptr, str_ptr + len};
-		}
-
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Userdata
-		{
-			assert(Stack::GetType(state, pos) == VMType::Userdata);
 			return lua_touserdata(state, pos);
 		}
 
-		template<>
-		inline auto Receive(lua_State *state, int pos) -> DataType::Thread
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::LightUserdata || type == VMType::Userdata);
+	};
+
+	template<>
+	struct Stack<DataType::Thread>
+	{
+		using Type = DataType::Thread;
+		static auto Push(lua_State *state, const Type &value) -> void
 		{
-			assert(Stack::GetType(state, pos) == VMType::Thread);
+			lua_pushthread(value);
+		}
+
+		static auto Receive(lua_State *state, int pos) -> Type
+		{
 			return lua_tothread(state, pos);
 		}
+
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Thread);
+	};
+
+	template<>
+	struct Stack<DataType::Userdata>
+	{
+		using Type = DataType::Userdata;
+		static auto Push(lua_State *state, const Type &value) -> void = delete;
+
+		static auto Receive(lua_State *state, int pos) -> Type
+		{
+			return lua_touserdata(state, pos);
+		}
+
+		template<VMType type>
+		constexpr static bool ConvertibleFromVM = (type == VMType::Userdata || type == VMType::LightUserdata);
 	};
 };
 

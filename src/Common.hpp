@@ -179,20 +179,6 @@ namespace LuaWay
 		using Thread = lua_State *;
 	};
 
-	using Object = std::variant
-	<
-		DataType::Nil,
-		DataType::Bool,
-		DataType::LightUserdata,
-		DataType::Number,
-		DataType::CFunction,
-		DataType::Int,
-		DataType::String,
-		DataType::Userdata,
-		DataType::Thread,
-		Ref
-	>;
-
 	template<typename T>
 	concept LuaType = AnyOfType<T,
 								DataType::Nil,
